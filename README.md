@@ -46,7 +46,7 @@
 
 ## Screenshots:
 
-   ![alt text](https://imgur.com/a/YbH1pyD)
-   ![alt text](https://imgur.com/a/MVqBq3s)
-   ![alt text](https://imgur.com/a/F6VojJ)
+![Imgur](https://i.imgur.com/Ex35t1C.png)
+![Imgur](https://imgur.com/1utWL0o.png)
+![Imgur](https://imgur.com/7lPikrU.png)
 
