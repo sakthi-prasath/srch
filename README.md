@@ -1,3 +1,6 @@
+# srch
+A system search tool to search for your files,apps and the web right from the terminal.	
+
 ## About:
 * Interactive UI in terminal built using [Urwid](http://urwid.org/index.html)
 *	Searches all your files and categorises them according to type.
