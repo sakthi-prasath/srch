@@ -25,7 +25,7 @@ A system search tool to search for your files,apps and the web right from the te
           -r, --regex               Search query will use regex syntax. By default regex special characters do not work
           -m, --monochrome          UI will be in monochrome colour; i.e Black and white
           -D, --directories         Results are initially shown for directories
-          -A, --apps                Results are initially shown for desktop apps(terminalapps not shown)
+          -A, --apps                Results are initially shown for desktop apps(terminal apps not shown)
           -g, --google              Results are initially shown for google search
           -t, --text                Results are initially shown for plain text files
           -c, --codes               Results are initially shown for source code/script files
