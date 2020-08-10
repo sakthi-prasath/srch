@@ -1,0 +1,701 @@
+#!/usr/bin/env python3
+import urwid
+import os
+import re
+import argparse
+import urllib.request
+import html
+import webbrowser
+import subprocess
+from urwid.util import is_mouse_press
+import time
+
+#Arguments
+parser=argparse.ArgumentParser(description="A system search tool to search for your files,apps and the web right from the terminal.")
+parser.add_argument("-q","--query",help="To search directly from command line")
+parser.add_argument("-H","--hidden",action="store_true",help="To index hidden files and directories (This takes a lot of time to search)")
+parser.add_argument("-r","--regex",action="store_true",help="Search query will use regex syntax. By default regex special characters do not work")
+parser.add_argument("-m","--monochrome",action="store_true",help="UI will be in monochrome colour; i.e Black and white")
+
+group=parser.add_mutually_exclusive_group()
+group.add_argument("-D","--directories",action="store_true",help="Results are initially shown for directories")
+group.add_argument("-A","--apps",action="store_true",help="Results are initially shown for desktop apps(terminal apps not shown)")
+group.add_argument("-g","--google",action="store_true",help="Results are initially shown for google search")
+group.add_argument("-t","--text",action="store_true",help="Results are initially shown for plain text files")
+group.add_argument("-c","--codes",action="store_true",help="Results are initially shown for source code/script files")
+group.add_argument("-d","--documents",action="store_true",help="Results are initially shown for documents")
+group.add_argument("-a","--audio",action="store_true",help="Results are initially shown for audio files")
+group.add_argument("-i","--images",action="store_true",help="Results are initially shown for image files")
+group.add_argument("-v","--videos",action="store_true",help="Results are initially shown for videos")
+
+args=parser.parse_args()
+
+wd=os.getcwd()
+q=0
+
+#Palette for displaying colours
+if not args.monochrome:
+    palette=[
+        ('popupbox','black','dark gray'),
+        ('txt','yellow',''),
+        ('button','black,underline,bold','dark gray'),
+        ('popup','white',''),
+        ('all','black','dark gray'),
+        ('allinv','dark gray,bold',''),
+        ('docs','white','light blue'),
+        ('docsinv','light blue',''),
+        ('direct','white','dark blue'),
+        ('directinv','dark blue',''),
+        ('pro','black','light green'),
+        ('proinv','light green',''),
+        ('vid','white','dark green'),
+        ('vidinv','dark green',''),
+        ('aud','black','light cyan'),
+        ('audinv','light cyan',''),
+        ('img','white','light magenta'),
+        ('imginv','light magenta',''),
+        ('text','white','dark magenta'),
+        ('textinv','dark magenta',''),
+        ('g','light blue',''),
+        ('o','dark red',''),
+        ('yo','yellow',''),
+        ('app','black','dark cyan'),
+        ('appinv','dark cyan',''),
+        ('query','white,bold',''),
+        ('info','dark red',''),
+        ('nav','light blue,bold',''),
+        ('sysbutton','light blue,underline,bold',''),
+        ('popuptxt','white','dark gray'),
+        ('head','light blue',''),
+        ('link','dark green',''),
+        ('res','bold','','bold','bold','g7'),
+        ('goo','dark gray',''),
+        ('goonav','light gray,bold','light blue'),
+        ('search','yellow,bold','')
+        ]
+else:    
+    palette=[
+        ('popupbox','',''),
+        ('txt','',''),
+        ('button','underline,bold',''),
+        ('popup','',''),
+        ('all','standout',''),
+        ('allinv','bold',''),
+        ('docs','standout',''),
+        ('docsinv','',''),
+        ('direct','standout',''),
+        ('directinv','',''),
+        ('pro','standout',''),
+        ('proinv','',''),
+        ('vid','standout',''),
+        ('vidinv','',''),
+        ('aud','standout',''),
+        ('audinv','',''),
+        ('img','standout',''),
+        ('imginv','',''),
+        ('text','standout',''),
+        ('textinv','',''),
+        ('nav','bold',''),
+        ('g','',''),
+        ('o','',''),
+        ('yo','',''),
+        ('app','standout',''),
+        ('appinv','',''),
+        ('query','bold',''),
+        ('info','',''),
+        ('sysbutton','bold',''),
+        ('popuptxt','',''),
+        ('head','bold',''),
+        ('link','',''),
+        ('res','bold',''),
+        ('goo','',''),
+        ('goonav','standout,bold',''),
+        ('search','bold','')
+        ]
+
+#Added the scrolling ability for the listbox widget,rest of the mouse_event function 
+#is from the urwid library
+class ScrollList(urwid.ListBox):
+    def mouse_event(self, size, event, button, col, row, focus):
+        (maxcol, maxrow) = size
+        
+        if button==4:
+            self._keypress_up((maxcol, maxrow))
+        if button==5:
+            self._keypress_down((maxcol, maxrow))
+  
+        middle, top, bottom = self.calculate_visible((maxcol, maxrow),focus=True)
+        if middle is None:
+            return False
+
+        _ignore, focus_widget, focus_pos, focus_rows, cursor = middle
+        trim_top, fill_above = top
+        _ignore, fill_below = bottom
+
+        fill_above.reverse()
+        w_list = ( fill_above +[ (focus_widget, focus_pos, focus_rows) ] +fill_below )
+
+        wrow = -trim_top
+        for w, w_pos, w_rows in w_list:
+            if wrow + w_rows > row:
+                break
+            wrow += w_rows
+        else:
+            return False
+
+        focus = focus and w == focus_widget
+        if is_mouse_press(event) and button==1:
+            if w.selectable():
+                self.change_focus((maxcol,maxrow), w_pos, wrow)
+
+        if not hasattr(w,'mouse_event'):
+            return False
+
+        return w.mouse_event((maxcol,), event, button, col, row-wrow,focus)
+                
+#Making the text widget selectable, like a button, works with double click    
+class ListEntry(urwid.Text):
+    _selectable = True
+    signals = ["click"]
+    on_double_click=None
+    
+    def keypress(self, size, key):
+        if self._command_map[key] != urwid.ACTIVATE:
+            return key
+        self._emit('click')
+
+    def mouse_event(self, size, event, button, x, y, focus):
+        if button != 1 or not urwid.util.is_mouse_press(event):
+            return False
+        
+        now = time.time()
+        if button==1:
+            if self.on_double_click!=None:
+                if now-self.on_double_click<0.5:
+                    self._emit('click')
+                    self.on_double_click=None
+            self.on_double_click=now            
+        return True
+
+#Similar to the above one but for buttons in the UI, works with single click       
+class PopupButton(urwid.Text):
+    _selectable = True
+    signals = ["click"]
+
+    def keypress(self, size, key):
+        if self._command_map[key] != urwid.ACTIVATE:
+            return key
+        self._emit('click')
+
+    def mouse_event(self, size, event, button, x, y, focus):
+        if button != 1 or not urwid.util.is_mouse_press(event):
+            return False
+        self._emit('click')
+        return True
+ 
+#Contents of the system directory popup       
+class PopUp(urwid.WidgetWrap):
+    signals = ['close']
+    def __init__(self):
+        ok = PopupButton(('button',"Ok"),align='center')
+        urwid.connect_signal(ok, 'click',lambda button:self._emit("close"))
+        dirs=urwid.Pile([ui.boot,ui.dev,ui.etc,ui.media,ui.mnt,ui.opt,ui.proc,ui.run,ui.srv,
+            ui.sys,ui.tmp,ui.usr,ui.var,urwid.LineBox(ok)])
+        fill = urwid.AttrMap(urwid.Filler(urwid.LineBox(dirs)),'popupbox')
+        self.__super.__init__(fill)
+
+#Creating the above popup        
+class sysdir(urwid.PopUpLauncher):
+    def __init__(self):
+        self.__super.__init__(PopupButton(('sysbutton',"[ System directories.. ]")))
+        urwid.connect_signal(self.original_widget, 'click',lambda button: self.open_pop_up())
+
+    def create_pop_up(self):
+        pop_up = PopUp()
+        urwid.connect_signal(pop_up, 'close',lambda button: self.close_pop_up())
+        return pop_up
+
+    def get_pop_up_parameters(self):
+        return {'left':0, 'top':0, 'overlay_width':30, 'overlay_height':20} 
+
+#The UI class which runs the TUI               
+class tui:
+    def __init__(self):
+        urwid.set_encoding("UTF-8")
+        self.header=urwid.LineBox(urwid.Text(('search','Srch'),align='center'))
+        
+        #Radio buttons for search categories
+        cat=[]
+        self.all=urwid.RadioButton(cat,('allinv','All Files'))
+        self.docs=urwid.RadioButton(cat,('docsinv','Documents'))
+        self.direct=urwid.RadioButton(cat,('directinv','Directories'))
+        self.pro=urwid.RadioButton(cat,('proinv','Codes/Scripts'))
+        self.vid=urwid.RadioButton(cat,('vidinv','Videos'))
+        self.aud=urwid.RadioButton(cat,('audinv','Audio Files'))
+        self.img=urwid.RadioButton(cat,('imginv','Images'))
+        self.txt=urwid.RadioButton(cat,('textinv','Text Files'))
+        self.goo=urwid.RadioButton(cat,([('g','G'),('o','o'),('yo','o'),('g','g'),('vidinv','l'),
+            ('o','e')]))
+        self.app=urwid.RadioButton(cat,('appinv','Apps'))
+        #Connecting radio buttons to a callback function
+        urwid.connect_signal(self.all,'postchange',self.state)
+        urwid.connect_signal(self.docs,'postchange',self.state)
+        urwid.connect_signal(self.direct,'postchange',self.state)
+        urwid.connect_signal(self.pro,'postchange',self.state)
+        urwid.connect_signal(self.vid,'postchange',self.state)
+        urwid.connect_signal(self.aud,'postchange',self.state)
+        urwid.connect_signal(self.img,'postchange',self.state)
+        urwid.connect_signal(self.txt,'postchange',self.state)
+        urwid.connect_signal(self.goo,'postchange',self.state)
+        urwid.connect_signal(self.app,'postchange',self.state)
+        
+        #Grid of all the radio buttons    
+        self.grid=urwid.AttrMap(urwid.Padding(urwid.GridFlow([self.all,self.direct,self.app,self.goo,
+            self.txt,self.pro,self.docs,self.aud,self.img,self.vid],20,1,0,'left'),left=2,right=2),'popup')
+
+        #File search options:
+        self.text=urwid.Text(('txt','Enter search term'),align='center')
+        self.box=urwid.LineBox(self.text)
+        self.optext=urwid.Text(('txt','File search options:  '))
+        self.hidden=urwid.CheckBox(('txt','Hidden'))
+        self.regex=urwid.CheckBox(('txt','Regex'))
+        self.options=urwid.LineBox(urwid.Columns([('weight',5,self.optext),('weight',4,self.hidden),
+            ('weight',4,self.regex),('weight',5,sysdir())]))
+        self.col=urwid.Columns([('weight',2,self.box),('weight',5,self.options)])
+        #Checkboxes
+        self.boot=urwid.CheckBox(('popuptxt','boot'))
+        self.dev=urwid.CheckBox(('popuptxt','dev'))
+        self.etc=urwid.CheckBox(('popuptxt','etc'))
+        self.media=urwid.CheckBox(('popuptxt','media'))
+        self.mnt=urwid.CheckBox(('popuptxt','mnt'))
+        self.opt=urwid.CheckBox(('popuptxt','opt'))
+        self.proc=urwid.CheckBox(('popuptxt','proc (Slows down search a lot)'))
+        self.run=urwid.CheckBox(('popuptxt','run'))
+        self.srv=urwid.CheckBox(('popuptxt','srv'))
+        self.sys=urwid.CheckBox(('popuptxt','sys (Slows down search)'))
+        self.tmp=urwid.CheckBox(('popuptxt','tmp'))
+        self.usr=urwid.CheckBox(('popuptxt','usr (Slows down search a lot)'))
+        self.var=urwid.CheckBox(('popuptxt','var (Slows down search)'))
+        
+        #Final layout
+        #Top
+        self.head=urwid.Pile([self.header,self.grid,self.col,urwid.Divider()])
+        #Middle part where results are displayed
+        self.ares=[]
+        self.listwalk=urwid.SimpleFocusListWalker(self.ares)
+        self.body=ScrollList(self.listwalk)
+        #Seach field
+        self.query=urwid.Edit(('txt','Search... '))
+        footer_col = urwid.LineBox(urwid.AttrMap(self.query, 'query'))
+        #All put together
+        self.frame=urwid.Pile([('pack',self.head) ,self.body, ('pack',footer_col)],focus_item=footer_col)
+        
+        #List of common document, program and plain text file extensions used to determine filetype,
+        #did I miss out anything?
+        self.docext=[
+            "\.0$","\.1st$","\.600$","\.602$","\.abw$","\.acl$","\.afp$","\.ami$",
+            "\.dbk$","\.dita$","\.doc$","\.docm$","\.docx$","\.dot$","\.dotx$","\.dwd$",
+            "\.egt$","\.epub$","\.ezw$","\.fdx$","\.ftm$","\.ftx$","\.gdoc$","\.html$",
+            "\.htm$","\.hwp$","\.hwpml$","\.lwp$","\.mbp$","\.md$","\.me$","\.mcw$",
+            "\.mobi$","\.nb$","\.nb$","\.nbp$","\.neis$","\.odm$","\.odoc$","\.odt$",
+            "\.osheet$","\.ott$","\.omm$","\.pages$","\.pap$","\.pdax$","\.pdf$","\.quox$",
+            "\.rtf$","\.rpt$","\.sdw$","\.se$","\.stw$","\.sxw$","\.tex$","\.info$","\.uof$",
+            "\.uoml$","\.via$","\.wpd$","\.wps$","\.wpt$","\.wrd$","\.wrf$","\.wri$","\.xhtml$",
+            "\.xht$","\.xml$","\.xps$","\.gslides$","\.key$","\.keynote$","\.nb$","\.nbp$",
+            "\.otp$","\.pez$","\.pot$","\.pps$","\.ppt$","\.pptx$","\.prz$","\.sdd$","\.shf$",
+            "\.shw$","\.slp$","\.sspss$","\.sti$","\.sxi$","\.thmx$","\.watch$","\.123$","\.ab2$",
+            "\.aws$","\.bcsv$","\.clf$","\.cell$","\.csv$","\.gsheet$","\.ans$","\.aww$","\.ccf$",
+            "\.numbers$","\.gnumeric$","\.lcw$","\.ods$","\.ots$","\.qpw$","\.sdc$","\.slk$",
+            "\.stc$","\.sxc$","\.tab$","\.vc$","\.wk1$","\.wk3$","\.wk4$","\.wks$","\.wks$",
+            "\.wq1$","\.xlk$","\.xls$","\.xlsb$","\.xlsm$","\.xlsx$","\.xlr$","\.xlt$","\.xltm$",
+            "\.xlw$","\.cwk$","\.odp$","\.show$","\.ab3$","\.csv$"]
+        self.proext=[
+            "\.adb$","\.ads$","\.ahk$","\.applescript$","\.as$","\.au3$","\.bat$","\.bas$",
+            "\.cljs$","\.cmd$","\.coffee$","\.c$","\.cpp$","\.ino$","\.egg$","\.egt$","\.erb$",
+            "\.hta$","\.ibi$","\.ici$","\.ijs$","\.ipynb$","\.itcl$","\.js$","\.jsfl$",
+            "\.kt$","\.lua$","\.m$","\.mrc$","\.ncf$","\.nuc$","\.nud$","\.nut$","\.pde$",
+            "\.php$","\.php$","\.phtml$","\.php3$","\.php4$","\.php5$","php7$","\.phps$",
+            "\.pht$","\.phar$","\.pl$","\.pm$","\.ps1$","\.ps1xml$","\.psc1$","\.psd1$",
+            "\.psm1$","\.py$","\.pyc$","\.pyo$","\.r$","\.rb$","\.rdp$","\.red$","\.rs$",
+            "\.sb2$","\.scpt$","\.scptd$","\.sdl$","\.sh$","\.syjs$","\.sypy$","\.tcl$",
+            "\.tns$","\.vbs$","\.xpl$","\.ebuild$"]
+        self.txtext=["\.cnf$","\.conf$","\.cfg$","\.log$","\.asc$","\.txt$"]
+        
+        self.c=False
+        
+        #Lists to store results
+        self.al=[]
+        self.dir=[]
+        self.doc=[]
+        self.prog=[]
+        self.Text=[]
+        self.Audio=[]
+        self.Image=[]
+        self.Vid=[]
+        self.g=[]
+        self.apps=[]
+        
+        #Enabling arguments
+        if args.directories:
+            self.direct.set_state(True,False)
+        if args.documents:
+            self.docs.set_state(True,False)
+        if args.codes:
+            self.pro.set_state(True,False)
+        if args.text:
+            self.txt.set_state(True,False)
+        if args.audio:
+            self.aud.set_state(True,False)
+        if args.images:
+            self.img.set_state(True,False)
+        if args.videos:
+            self.vid.set_state(True,False)
+        if args.google:
+            self.goo.set_state(True,False)
+        if args.apps:
+            self.app.set_state(True,False)
+        
+        if args.hidden:
+            self.hidden.set_state(True)
+        if args.regex:
+            self.regex.set_state(True)
+        if args.query:
+            self.query.set_edit_text(args.query)
+            if self.goo.state:
+                self.google()
+            else:
+                self.search()
+                
+    #The file search function, uses os.walk to implement file tree walk.
+    #However, I modified it such that it shows results in working directory first
+    #Hence, I travel in reverse,changing to previous directory and excluding
+    #already searched directories
+    def search(self,*arg):
+        self.al=[]
+        self.dir=[]
+        self.doc=[]
+        self.prog=[]
+        self.Text=[]
+        self.Audio=[]
+        self.Image=[]
+        self.Vid=[]
+        self.apps=[]
+        #Refresh the screen to show info dialog
+        if q:
+            loop.draw_screen()
+        query = self.query.get_edit_text()
+        if not self.regex.state:
+            query=re.escape(query)
+            space=re.compile('\\\ ')
+            query=re.sub(space,'.*',query)
+            
+        os.chdir(wd)
+        cwd=os.getcwd()
+        exclude=[]
+        
+        if query.strip()=='':
+            self.text.set_text(('info',"Please enter a valid string to search"))
+        else:
+            while(cwd!='/'):
+                for d,s,f in os.walk(rf'{cwd}',topdown=True):
+                    if not self.hidden.state:
+                        s[:]=[dirs for dirs in s if not dirs[0]=='.']
+                        f=[files for files in f if not files[0]=='.']
+                    if d not in exclude:
+                        s.sort(key=str.casefold)
+                        f.sort(key=str.casefold)        
+                        for name in s:
+                            if query.islower():
+                                srch=re.search(query,name,re.I)
+                            else:
+                                srch=re.search(query,name)
+                            if srch:
+                                self.addwidd(name,d)
+                            
+                        for name in f:
+                            if query.islower():
+                                srch=re.search(query,name,re.I)
+                            else:
+                                srch=re.search(query,name)
+                            if srch:
+                                self.addwidf(name,d)
+                    exclude.append(d)
+                os.chdir("..")
+                cwd=os.getcwd()
+            #Searching in root(/), as I have missed it out previously.
+            #Below is the list of directories not indexed by default    
+            dontindex=["usr","boot","dev","proc","run","srv","sys","tmp","var",
+                "lost+found","opt","etc","media","mnt","snap"]
+            sysdirs=["boot","dev","etc","media","mnt","opt","proc","run","srv",
+                "sys","tmp","usr","var"]
+            chbox=[self.boot,self.dev,self.etc,self.media,self.mnt,self.opt,self.proc,
+                self.run,self.srv,self.sys,self.tmp,self.usr,self.var]
+            #Enabling the checkboxes in the popup
+            i=0
+            while i<len(sysdirs):
+                if not chbox[i].state:
+                    if not dontindex.count(sysdirs[i]):
+                        dontindex.append(sysdirs[i])
+                else:
+                    if dontindex.count(sysdirs[i]):
+                        dontindex.remove(sysdirs[i])
+                i+=1
+            
+            for d,s,f in os.walk('/',topdown=True):
+                    s[:]=[dirs for dirs in s if dirs not in dontindex]
+                    if not self.hidden.state:
+                        s[:]=[dirs for dirs in s if not dirs[0]=='.']
+                        f=[files for files in f if not files[0]=='.']
+                    if d not in exclude:
+                        s.sort(key=str.casefold)
+                        f.sort(key=str.casefold)        
+                        for name in s:
+                            if query.islower():
+                                srch=re.search(query,name,re.I)
+                            else:
+                                srch=re.search(query,name)
+                            if srch:
+                                self.addwidd(name,d)    
+                        for name in f:
+                            if query.islower():
+                                srch=re.search(query,name,re.I)
+                            else:
+                                srch=re.search(query,name)
+                            if srch:
+                                self.addwidf(name,d)
+                                
+            #Searching for apps through the entries of .desktop files in /usr/share/applications
+            os.chdir('/usr/share/applications')
+            pri1=[]
+            pri2=[]
+            pri3=[]
+            for d,s,f in os.walk('/usr/share/applications',topdown=True):
+                for name in f:
+                    appname=os.popen(f'egrep -m 1 -e "^Name=(.*?)$" {name} |cut -c 6-').read()
+                    temp=os.popen(f'egrep -m 1 -e "^Exec=(.*?)$" {name} |cut -c 6-').read()
+                    #Ignore the % parameters in the executable command parameter
+                    exe=''
+                    for c in list(temp):
+                        if c=='%':
+                            break
+                        else:
+                            exe=exe+c
+                    exe="'"+exe+"'"
+                    
+                    comment=os.popen(f'egrep -m 1 -e "^Comment=(.*?)$" {name} |cut -c 9-').read()
+                    category=os.popen(f'egrep -m 1 -e "^Categories=(.*?)$" {name} |cut -c 12-').read()
+                    #To exclude terminal only apps
+                    terminal=os.popen(f'egrep -m 1 -e "^Terminal=true$" {name}').read()
+                    if query.islower():
+                        srch1=re.search(query,appname,re.I)
+                        srch2=re.search(query,comment,re.I)
+                        srch3=re.search(query,category,re.I)
+                    else:
+                        srch1=re.search(query,appname)
+                        srch2=re.search(query,comment)
+                        srch3=re.search(query,category)
+                    #This is done to prioritise matches to app name first,then description of the app    
+                    if srch1 and terminal!='Terminal=true\n':
+                        pri1.append((appname,comment,exe))
+                    elif srch2 and terminal!='Terminal=true\n':
+                        pri2.append((appname,comment,exe))
+                    elif srch3 and terminal!='Terminal=true\n':
+                        pri3.append((appname,comment,exe))
+                pri1=pri1+pri2+pri3
+                
+                for (appname,comment,exe) in pri1:
+                    self.addwida(appname,comment,exe)
+            os.chdir(wd)                                                            
+            self.c=True
+            self.state()
+            
+    #Adds the app widgets to a list
+    def addwida(self,appname,comment,exe):
+        entry=ListEntry([appname,comment])
+        urwid.connect_signal(entry,'click',self.openapp,exe)
+        self.apps.append(urwid.AttrMap(entry, 'res', focus_map='app'))
+        self.apps.append(urwid.Divider())
+    
+    def openapp(self,something,exe):
+        subprocess.Popen(rf'bash -c {exe}',stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,
+            start_new_session=True,shell=True)
+    
+    #Determining filetype either using mime type or extensions when it is not effective for the
+    #below function
+    def filetype(self,name,path):
+        flag=None
+        for ext in self.docext:
+            if re.search(ext,name,re.I):
+                return str("Document")
+        for ext in self.proext:
+            if re.search(ext,name,re.I):
+                flag=1
+                break
+        fdes=None
+        try:
+            fdes=os.popen(rf'echo $(file {path} -b)').read()
+            if flag==1 or re.search('executable',fdes,re.I):
+                return str("Code/Script")
+        except:
+            pass
+        flag=None
+        for ext in self.txtext:
+            if re.search(ext,name,re.I):
+                flag=1
+                break
+        fdes=os.popen(rf'echo $(xdg-mime query filetype {path} 2>/dev/null)').read()
+        if flag==1 or re.search('^text/plain$',fdes,re.I):
+            return str("Plain Text File")
+        if re.search('^audio',fdes,re.I):
+            return str("Audio File")
+        if re.search('^image',fdes,re.I):
+            return str("Image File")
+        if re.search('^video',fdes,re.I):
+            return str("Video")
+    
+    #Adds files to their category lists    and common list        
+    def addwidf(self,name,d):
+        path="'"+d+"/"+name+"'"
+        ftype=self.filetype(name,path)
+        if ftype!=None:
+            res=name+"\n"+ftype+"\n"+"Location: "+d
+        else:
+            res=name+"\n"+"File"+"\n"+"Location: "+d
+        entry=ListEntry(res)
+        urwid.connect_signal(entry,'click',self.openfile,path)
+        self.al.append(urwid.AttrMap(entry, 'res', focus_map='all'))
+        self.al.append(urwid.Divider())
+        if ftype=="Document":
+            self.doc.append(urwid.AttrMap(entry, 'res', focus_map='docs'))
+            self.doc.append(urwid.Divider())
+        if ftype=="Code/Script":
+            self.prog.append(urwid.AttrMap(entry, 'res', focus_map='pro'))
+            self.prog.append(urwid.Divider())
+        if ftype=="Plain Text File":
+            self.Text.append(urwid.AttrMap(entry, 'res', focus_map='text'))
+            self.Text.append(urwid.Divider())
+        if ftype=="Audio File":
+            self.Audio.append(urwid.AttrMap(entry, 'res', focus_map='aud'))
+            self.Audio.append(urwid.Divider())
+        if ftype=="Image File":
+            self.Image.append(urwid.AttrMap(entry, 'res', focus_map='img'))
+            self.Image.append(urwid.Divider())
+        if ftype=="Video":
+            self.Vid.append(urwid.AttrMap(entry, 'res', focus_map='vid'))
+            self.Vid.append(urwid.Divider())
+    
+    #Adds directories to a list    
+    def addwidd(self,name,d):
+        res=name+"\n"+"Directory"+"\n"+"Location: "+d
+        entry=ListEntry(res)
+        path=d+"/"+"'"+name+"'"
+        urwid.connect_signal(entry,'click',self.openfile,path)
+        self.dir.append(urwid.AttrMap(entry, 'res', focus_map='direct'))
+        self.dir.append(urwid.Divider())
+    
+    def openfile(entry,something,path):
+        os.system(rf"xdg-open {path} >/dev/null 2>&1")
+        
+    #Callback function which is called when radio button is changed,
+    #modifies the displayed list        
+    def state(self,*args):
+        radios=[self.all,self.direct,self.docs,self.pro,self.txt,
+            self.aud,self.img,self.vid,self.app]
+        catlists=[self.al,self.dir,self.doc,self.prog,self.Text,
+            self.Audio,self.Image,self.Vid,self.apps]
+        i=0
+        while i<len(radios): 
+            if radios[i].state:
+                if self.c:
+                    if catlists[i]==[]:
+                        self.text.set_text(('info','No results found'))
+                    else:
+                        self.text.set_text(('txt','Results: '))
+                self.listwalk[:]=catlists[i]
+            i+=1
+        if self.goo.state:
+            self.google()
+            
+        self.listwalk.set_focus(0)
+    
+    #Displays results from google, works by reading the html file of google link,
+    #then using regex to scrape content from the anchor tags    
+    def google(self,something=None,start=0):
+        self.g=[]
+        self.listwalk[:]=[]
+        query = self.query.get_edit_text()
+        #Check if connected to the internet
+        constate=os.popen('ping google.com -c1 2>/dev/null').read()
+        if constate=='':
+            self.text.set_text(('info','No Internet Connection'))
+        elif query.strip()=='':    
+            pass
+        else:
+            self.text.set_text(('txt','Searching...'))
+            if q:
+                loop.draw_screen()
+            space=re.compile(' ')
+            query=re.sub(space,'+',query)        
+            url=rf'https://www.google.com/search?q={query}&start={start}'        
+            req = urllib.request.Request(url)
+            req.add_header('User-Agent', 'Mozilla/5.0 (Windows NT 6.1; WOW64; rv:15.0) Gecko/20120427 Firefox/15.0a1')
+            resp = urllib.request.urlopen(req)
+            respData = resp.read()
+
+            links=re.findall('<div class="r"><a href="(.*?)"',str(respData,encoding='utf-8'))
+            headings=re.findall('<div class="r">.*?<h3 class=".*?">(.*?)</h3>',str(respData,encoding='utf-8'))
+            data=re.findall('<div class="s">.*?<span class="st">(.*?)</span><.?div',str(respData,encoding='utf-8'))
+
+            clean=re.compile('<.*?>')
+            #Previous page link
+            if start>0:
+                entry=ListEntry("Previous Page",align='center')
+                urwid.connect_signal(entry,'click',self.google,start-10)
+                self.g.append(urwid.AttrMap(entry, 'head', focus_map='goonav'))
+                self.g.append(urwid.Divider())    
+            i=0
+            while i<len(links):
+                head=(html.unescape(headings[i]))+"\n"
+                link=links[i]
+                desc=(html.unescape(re.sub(clean,'',data[i])))
+                entry=ListEntry([('head',head),('link',link+'\n'),desc])
+                urwid.connect_signal(entry,'click',self.openurl,link)
+                self.g.append(urwid.AttrMap(entry, 'res', focus_map='goo'))
+                self.g.append(urwid.Divider())
+                i+=1
+            #Next page link
+            entry=ListEntry("Next Page",align='center')
+            urwid.connect_signal(entry,'click',self.google,start+10)
+            #Add result widgets to a list
+            self.g.append(urwid.AttrMap(entry, 'nav', focus_map='goonav'))
+            self.g.append(urwid.Divider())
+            #Display them like in the callback(state) function
+            self.text.set_text(('txt','Results: '))
+            self.listwalk[:]=self.g
+            self.listwalk.set_focus(0)
+            
+    def openurl(self,something,link):
+        webbrowser.open(link,new=2)
+        
+    def handle_input(self,keypress):
+        if keypress=='enter':
+            self.text.set_text(('txt','Searching...'))
+            self.listwalk[:]=[]
+            self.search()
+            if self.goo.state:
+                query = self.query.get_edit_text()
+                if query.strip()=='':    
+                    self.text.set_text(('info',"Please enter a valid string to search"))
+                    self.c=0
+                self.state()
+        if keypress=='esc':
+            self.exit()
+            
+    def exit(self,nothing=None):
+        raise urwid.ExitMainLoop()
+
+#Initialise UI class and run the UI loop
+ui=tui()
+loop = urwid.MainLoop(ui.frame,palette,unhandled_input=ui.handle_input,pop_ups=True)
+q=1
+loop.run()        
