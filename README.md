@@ -49,7 +49,7 @@ A system search tool to search for your files,apps and the web right from the te
 
 ## Screenshots:
 
-![Imgur](https://i.imgur.com/Ex35t1C.png)
+![Imgur](https://imgur.com/Ex35t1C.png)
 ![Imgur](https://imgur.com/1utWL0o.png)
 ![Imgur](https://imgur.com/7lPikrU.png)
 
